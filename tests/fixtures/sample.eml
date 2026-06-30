@@ -1,0 +1,8 @@
+From: Alice Example <alice@example.com>
+To: George <george@example.org>
+Cc: Newsletter <newsletter@example.net>
+Subject: Project follow up
+Message-ID: <sample-1@example.com>
+Date: Tue, 30 Jun 2026 10:00:00 +0000
+
+This body is intentionally ignored by Mailgraph's metadata-only scanner.

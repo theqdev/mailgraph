@@ -1,0 +1,7 @@
+/target
+*.sqlite
+*.sqlite3
+*.db
+*.pst
+*.ost
+.mailgraph/

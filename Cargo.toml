@@ -1,0 +1,16 @@
+[package]
+name = "mailgraph"
+version = "0.1.0"
+edition = "2024"
+description = "Private local graph of people and conversations from Outlook archives"
+license = "MIT"
+repository = "https://github.com/qdev/mailgraph"
+
+[dependencies]
+anyhow = "1.0.100"
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
+clap = { version = "4.5.53", features = ["derive"] }
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+tracing = "0.1.43"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+tempfile = "3.23.0"
