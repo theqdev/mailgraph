@@ -71,6 +71,14 @@ cargo run -- contacts --all --csv --preset address-book
 cargo run -- contacts --all --csv --columns email,name,domain,score
 cargo run -- contacts --kind automated
 cargo run -- contacts --domain example.com
+cargo run -- contacts --domain-contains example
+cargo run -- contacts --all --exclude-domain github.com --exclude-domain atlassian.net
+cargo run -- contacts --all --exclude-email noreply@example.com
+cargo run -- contacts --all --exclude-email-contains noreply,no-reply,do_not_reply,do-not-reply,donotreply
+cargo run -- contacts --all --exclude-kind no_reply --exclude-kind newsletter --exclude-kind promotional --exclude-kind automated
+cargo run -- contacts --all --exclude-domain-contains noreply
+cargo run -- contacts --all --exclude-domain-contains atlassian --exclude-domain-contains github
+cargo run -- contacts --all --exclude-domain-contains atlassian,github
 cargo run -- contacts --role cc
 cargo run -- contacts --role cc --all --csv --preset address-book > cc-contacts.csv
 ```
@@ -79,6 +87,42 @@ When `scan` is run without `--db`, Mailgraph creates a database named after the
 input, such as `sample.mailgraph.sqlite`, and stores that path in
 `.mailgraph/current-db`. Later commands reuse that remembered database. Pass
 `--db path/to/file.sqlite` to override it.
+
+## Cleaning other email lists
+
+Mailgraph also includes a side utility for cleaning CSV email lists that did not
+come from a PST scan:
+
+```bash
+cargo run --bin clean-email-list -- --input raw-contacts.csv --output clean-contacts.csv
+```
+
+Useful options:
+
+```bash
+cargo run --bin clean-email-list -- --input raw.csv --output clean.csv --email-column email --name-column name
+cargo run --bin clean-email-list -- --input raw.csv --output clean.csv --keep-free-mail
+cargo run --bin clean-email-list -- --input raw.csv --output clean.csv --drop-role-accounts
+cargo run --bin clean-email-list -- --input raw.csv --output clean.csv --exclude-domain-contains shopify,mailchimp
+cargo run --bin clean-email-list -- --input raw.csv --output clean.csv --exclude-email someone@example.com
+```
+
+The exclusion options can also come from environment variables, which keeps
+private or machine-specific filter lists out of the repository:
+
+```bash
+export MAILGRAPH_CLEAN_EXCLUDE_DOMAIN_CONTAINS="shopify,mailchimp"
+export MAILGRAPH_CLEAN_EXCLUDE_EMAIL_CONTAINS="newsletter,notification"
+export MAILGRAPH_CLEAN_EXCLUDE_EMAILS="someone@example.com"
+cargo run --bin clean-email-list -- --input raw.csv --output clean.csv
+```
+
+Command-line values take precedence over the corresponding environment
+variable. Built-in rules are intentionally generic: by default the utility
+normalizes emails, removes duplicates and no-reply-style addresses, and excludes
+common free-mail providers for business-list cleanup. Use `--keep-free-mail`
+when personal addresses are expected, or `--no-defaults` to use only explicit
+CLI/environment filters.
 
 ## Architecture
 

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::archive::{PffDirectoryArchiveReader, PffExportArchiveReader, Rfc822ArchiveReader};
@@ -32,47 +32,7 @@ enum Command {
     },
 
     /// List indexed contacts.
-    Contacts {
-        /// SQLite database path.
-        #[arg(long)]
-        db: Option<PathBuf>,
-
-        /// Maximum contacts to print.
-        #[arg(long, default_value_t = 50)]
-        limit: i64,
-
-        /// Show every indexed contact, including filtered senders, using a high limit.
-        #[arg(long)]
-        all: bool,
-
-        /// Include no-reply, bulk, newsletter, promotional, and automated senders.
-        #[arg(long)]
-        include_filtered: bool,
-
-        /// Only show one sender kind: person, no_reply, bulk, newsletter, promotional, automated, invalid.
-        #[arg(long)]
-        kind: Option<String>,
-
-        /// Only show contacts from this normalized domain.
-        #[arg(long)]
-        domain: Option<String>,
-
-        /// Only show contacts seen in this role: sender, recipient, to, cc, or bcc.
-        #[arg(long)]
-        role: Option<String>,
-
-        /// Output contacts as CSV.
-        #[arg(long)]
-        csv: bool,
-
-        /// CSV columns to export, comma-separated. Aliases: name, score, to.
-        #[arg(long)]
-        columns: Option<String>,
-
-        /// CSV column preset: address-book, ranked, or full.
-        #[arg(long)]
-        preset: Option<String>,
-    },
+    Contacts(Box<ContactsArgs>),
 
     /// Scan exported RFC822/EML files. Useful for fixtures and pffexport output.
     ScanEml {
@@ -100,6 +60,73 @@ enum Command {
         #[arg(long)]
         db: Option<PathBuf>,
     },
+}
+
+#[derive(Debug, Args)]
+struct ContactsArgs {
+    /// SQLite database path.
+    #[arg(long)]
+    db: Option<PathBuf>,
+
+    /// Maximum contacts to print.
+    #[arg(long, default_value_t = 50)]
+    limit: i64,
+
+    /// Show every indexed contact, including filtered senders, using a high limit.
+    #[arg(long)]
+    all: bool,
+
+    /// Include no-reply, bulk, newsletter, promotional, and automated senders.
+    #[arg(long)]
+    include_filtered: bool,
+
+    /// Only show one sender kind: person, no_reply, bulk, newsletter, promotional, automated, invalid.
+    #[arg(long)]
+    kind: Option<String>,
+
+    /// Exclude a sender kind: no_reply, bulk, newsletter, promotional, automated, invalid, or person. Can be repeated.
+    #[arg(long)]
+    exclude_kind: Vec<String>,
+
+    /// Only show contacts from this normalized domain.
+    #[arg(long)]
+    domain: Option<String>,
+
+    /// Only show contacts whose domain contains this text.
+    #[arg(long)]
+    domain_contains: Vec<String>,
+
+    /// Exclude an exact email address. Can be repeated.
+    #[arg(long)]
+    exclude_email: Vec<String>,
+
+    /// Exclude contacts whose email address contains this text. Can be repeated.
+    #[arg(long)]
+    exclude_email_contains: Vec<String>,
+
+    /// Exclude an exact domain. Can be repeated.
+    #[arg(long)]
+    exclude_domain: Vec<String>,
+
+    /// Exclude contacts whose domain contains this text.
+    #[arg(long)]
+    exclude_domain_contains: Vec<String>,
+
+    /// Only show contacts seen in this role: sender, recipient, to, cc, or bcc.
+    #[arg(long)]
+    role: Option<String>,
+
+    /// Output contacts as CSV.
+    #[arg(long)]
+    csv: bool,
+
+    /// CSV columns to export, comma-separated. Aliases: name, score, to.
+    #[arg(long)]
+    columns: Option<String>,
+
+    /// CSV column preset: address-book, ranked, or full.
+    #[arg(long)]
+    preset: Option<String>,
 }
 
 pub fn run() -> Result<()> {
@@ -139,33 +166,23 @@ fn run_with_args(cli: Cli) -> Result<()> {
 
             print_scan_report(summary, &db, started.elapsed());
         }
-        Command::Contacts {
-            db,
-            limit,
-            all,
-            include_filtered,
-            kind,
-            domain,
-            role,
-            csv,
-            columns,
-            preset,
-        } => {
-            let db = resolve_existing_db_path(db)?;
+        Command::Contacts(args) => {
+            let db = resolve_existing_db_path(args.db.clone())?;
             let database = Database::open(db)?;
-            let query = build_contact_query(limit, all, include_filtered, kind, domain, role)?;
+            let query = build_contact_query(&args)?;
             let contacts = database.contacts(&query)?;
-            let matched_contacts = if csv {
+            let matched_contacts = if args.csv {
                 None
             } else {
                 Some(database.contact_count(&query)?)
             };
-            let csv_columns = csv
-                .then(|| resolve_csv_columns(columns.as_deref(), preset.as_deref()))
+            let csv_columns = args
+                .csv
+                .then(|| resolve_csv_columns(args.columns.as_deref(), args.preset.as_deref()))
                 .transpose()?;
 
             if contacts.is_empty() {
-                if csv {
+                if args.csv {
                     print_contacts_csv(&contacts, &csv_columns.expect("csv columns are resolved"));
                 } else {
                     print_contacts_summary(&query, 0, matched_contacts.unwrap_or(0));
@@ -322,33 +339,50 @@ fn read_current_db() -> Result<Option<PathBuf>> {
     }
 }
 
-fn build_contact_query(
-    limit: i64,
-    all: bool,
-    include_filtered: bool,
-    kind: Option<String>,
-    domain: Option<String>,
-    role: Option<String>,
-) -> Result<ContactQuery> {
-    let limit = if all { 100_000 } else { limit };
+fn build_contact_query(args: &ContactsArgs) -> Result<ContactQuery> {
+    let limit = if args.all { 100_000 } else { args.limit };
     if limit < 1 {
         bail!("--limit must be at least 1");
     }
 
-    let kind = kind.map(|kind| kind.trim().to_ascii_lowercase());
-    if let Some(kind) = &kind {
-        let valid = matches!(
-            kind.as_str(),
-            "person" | "no_reply" | "bulk" | "newsletter" | "promotional" | "automated" | "invalid"
+    let kind = args
+        .kind
+        .as_ref()
+        .map(|kind| kind.trim().to_ascii_lowercase());
+    if let Some(kind) = &kind
+        && !is_valid_contact_kind(kind)
+    {
+        bail!(
+            "unknown contact kind '{kind}'. Expected one of: person, no_reply, bulk, newsletter, promotional, automated, invalid"
         );
-        if !valid {
-            bail!(
-                "unknown contact kind '{kind}'. Expected one of: person, no_reply, bulk, newsletter, promotional, automated, invalid"
-            );
+    }
+
+    let exclude_kinds = normalize_filter_list(&args.exclude_kind);
+    if let Some(exclude_kinds) = &exclude_kinds {
+        for kind in exclude_kinds.split(',') {
+            if !is_valid_contact_kind(kind) {
+                bail!(
+                    "unknown excluded contact kind '{kind}'. Expected one of: person, no_reply, bulk, newsletter, promotional, automated, invalid"
+                );
+            }
         }
     }
 
-    let role = role.map(|role| role.trim().to_ascii_lowercase());
+    let domain = normalize_optional_filter(args.domain.as_deref());
+    let domain_contains = normalize_filter_list(&args.domain_contains);
+    if domain.is_some() && domain_contains.is_some() {
+        bail!("use either --domain or --domain-contains, not both");
+    }
+
+    let exclude_emails = normalize_filter_list(&args.exclude_email);
+    let exclude_email_contains = normalize_filter_list(&args.exclude_email_contains);
+    let exclude_domains = normalize_filter_list(&args.exclude_domain);
+    let exclude_domain_contains = normalize_filter_list(&args.exclude_domain_contains);
+
+    let role = args
+        .role
+        .as_ref()
+        .map(|role| role.trim().to_ascii_lowercase());
     if let Some(role) = &role {
         let valid = matches!(role.as_str(), "sender" | "recipient" | "to" | "cc" | "bcc");
         if !valid {
@@ -358,11 +392,45 @@ fn build_contact_query(
 
     Ok(ContactQuery {
         limit,
-        include_filtered: all || include_filtered || kind.is_some(),
+        include_filtered: args.all || args.include_filtered || kind.is_some(),
         kind,
-        domain: domain.map(|domain| domain.trim().to_ascii_lowercase()),
+        exclude_kinds,
+        domain,
         role,
+        domain_contains,
+        exclude_emails,
+        exclude_email_contains,
+        exclude_domains,
+        exclude_domain_contains,
     })
+}
+
+fn is_valid_contact_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "person" | "no_reply" | "bulk" | "newsletter" | "promotional" | "automated" | "invalid"
+    )
+}
+
+fn normalize_optional_filter(value: Option<&str>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_filter_list(values: &[String]) -> Option<String> {
+    let values = values
+        .iter()
+        .flat_map(|value| {
+            value
+                .split(',')
+                .map(|part| part.trim().to_ascii_lowercase())
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    (!values.is_empty()).then(|| values.join(","))
 }
 
 fn print_contacts_human(contacts: &[ContactSummary]) {
@@ -414,11 +482,29 @@ fn contact_filter_labels(query: &ContactQuery) -> Vec<String> {
     if let Some(kind) = &query.kind {
         labels.push(format!("kind={kind}"));
     }
+    if let Some(exclude_kinds) = &query.exclude_kinds {
+        labels.push(format!("exclude_kind={exclude_kinds}"));
+    }
     if let Some(domain) = &query.domain {
         labels.push(format!("domain={domain}"));
     }
+    if let Some(domain_contains) = &query.domain_contains {
+        labels.push(format!("domain_contains={domain_contains}"));
+    }
     if let Some(role) = &query.role {
         labels.push(format!("role={role}"));
+    }
+    if let Some(exclude_emails) = &query.exclude_emails {
+        labels.push(format!("exclude_email={exclude_emails}"));
+    }
+    if let Some(exclude_email_contains) = &query.exclude_email_contains {
+        labels.push(format!("exclude_email_contains={exclude_email_contains}"));
+    }
+    if let Some(exclude_domains) = &query.exclude_domains {
+        labels.push(format!("exclude_domain={exclude_domains}"));
+    }
+    if let Some(exclude_domain_contains) = &query.exclude_domain_contains {
+        labels.push(format!("exclude_domain_contains={exclude_domain_contains}"));
     }
 
     labels

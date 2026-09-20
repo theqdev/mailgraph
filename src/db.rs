@@ -168,7 +168,29 @@ impl Database {
 
     pub fn contacts(&self, query: &ContactQuery) -> Result<Vec<ContactSummary>> {
         let mut stmt = self.conn.prepare(
-            "WITH interactions AS (
+            "WITH RECURSIVE
+            domain_contains_terms(value, rest) AS (
+                SELECT '', COALESCE(?6, '') || ','
+                UNION ALL
+                SELECT substr(rest, 0, instr(rest, ',')), substr(rest, instr(rest, ',') + 1)
+                FROM domain_contains_terms
+                WHERE rest <> ''
+            ),
+            exclude_domain_contains_terms(value, rest) AS (
+                SELECT '', COALESCE(?9, '') || ','
+                UNION ALL
+                SELECT substr(rest, 0, instr(rest, ',')), substr(rest, instr(rest, ',') + 1)
+                FROM exclude_domain_contains_terms
+                WHERE rest <> ''
+            ),
+            exclude_email_contains_terms(value, rest) AS (
+                SELECT '', COALESCE(?10, '') || ','
+                UNION ALL
+                SELECT substr(rest, 0, instr(rest, ',')), substr(rest, instr(rest, ',') + 1)
+                FROM exclude_email_contains_terms
+                WHERE rest <> ''
+            ),
+            interactions AS (
                 SELECT
                     ca.contact_id,
                     1 AS sent_count,
@@ -245,6 +267,33 @@ impl Database {
                         + COALESCE(a.bcc_count, 0)
                     ) > 0)
                )
+               AND (
+                    ?6 IS NULL
+                    OR EXISTS (
+                        SELECT 1
+                        FROM domain_contains_terms
+                        WHERE value <> '' AND ca.domain LIKE '%' || value || '%'
+                    )
+               )
+               AND (?7 IS NULL OR instr(',' || ?7 || ',', ',' || ca.email || ',') = 0)
+               AND (?8 IS NULL OR instr(',' || ?8 || ',', ',' || ca.domain || ',') = 0)
+               AND (
+                    ?9 IS NULL
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM exclude_domain_contains_terms
+                        WHERE value <> '' AND ca.domain LIKE '%' || value || '%'
+                    )
+               )
+               AND (
+                    ?10 IS NULL
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM exclude_email_contains_terms
+                        WHERE value <> '' AND ca.email LIKE '%' || value || '%'
+                    )
+               )
+               AND (?11 IS NULL OR instr(',' || ?11 || ',', ',' || c.sender_kind || ',') = 0)
              ORDER BY rank_score DESC, a.conversation_count DESC, c.message_count DESC, ca.email ASC
              LIMIT ?1",
         )?;
@@ -255,7 +304,13 @@ impl Database {
                 query.include_filtered,
                 query.kind.as_deref(),
                 query.domain.as_deref(),
-                query.role.as_deref()
+                query.role.as_deref(),
+                query.domain_contains.as_deref(),
+                query.exclude_emails.as_deref(),
+                query.exclude_domains.as_deref(),
+                query.exclude_domain_contains.as_deref(),
+                query.exclude_email_contains.as_deref(),
+                query.exclude_kinds.as_deref()
             ],
             |row| {
                 Ok(ContactSummary {
@@ -280,7 +335,29 @@ impl Database {
     pub fn contact_count(&self, query: &ContactQuery) -> Result<i64> {
         self.conn
             .query_row(
-                "WITH interactions AS (
+                "WITH RECURSIVE
+                domain_contains_terms(value, rest) AS (
+                    SELECT '', COALESCE(?5, '') || ','
+                    UNION ALL
+                    SELECT substr(rest, 0, instr(rest, ',')), substr(rest, instr(rest, ',') + 1)
+                    FROM domain_contains_terms
+                    WHERE rest <> ''
+                ),
+                exclude_domain_contains_terms(value, rest) AS (
+                    SELECT '', COALESCE(?8, '') || ','
+                    UNION ALL
+                    SELECT substr(rest, 0, instr(rest, ',')), substr(rest, instr(rest, ',') + 1)
+                    FROM exclude_domain_contains_terms
+                    WHERE rest <> ''
+                ),
+                exclude_email_contains_terms(value, rest) AS (
+                    SELECT '', COALESCE(?9, '') || ','
+                    UNION ALL
+                    SELECT substr(rest, 0, instr(rest, ',')), substr(rest, instr(rest, ',') + 1)
+                    FROM exclude_email_contains_terms
+                    WHERE rest <> ''
+                ),
+                interactions AS (
                     SELECT
                         ca.contact_id,
                         1 AS sent_count,
@@ -329,12 +406,45 @@ impl Database {
                            + COALESCE(a.cc_count, 0)
                            + COALESCE(a.bcc_count, 0)
                        ) > 0)
-                  )",
+                  )
+                  AND (
+                       ?5 IS NULL
+                       OR EXISTS (
+                           SELECT 1
+                           FROM domain_contains_terms
+                           WHERE value <> '' AND ca.domain LIKE '%' || value || '%'
+                       )
+                  )
+                  AND (?6 IS NULL OR instr(',' || ?6 || ',', ',' || ca.email || ',') = 0)
+                  AND (?7 IS NULL OR instr(',' || ?7 || ',', ',' || ca.domain || ',') = 0)
+                  AND (
+                       ?8 IS NULL
+                       OR NOT EXISTS (
+                           SELECT 1
+                           FROM exclude_domain_contains_terms
+                           WHERE value <> '' AND ca.domain LIKE '%' || value || '%'
+                       )
+                  )
+                  AND (
+                       ?9 IS NULL
+                       OR NOT EXISTS (
+                           SELECT 1
+                           FROM exclude_email_contains_terms
+                           WHERE value <> '' AND ca.email LIKE '%' || value || '%'
+                       )
+                  )
+                  AND (?10 IS NULL OR instr(',' || ?10 || ',', ',' || c.sender_kind || ',') = 0)",
                 params![
                     query.include_filtered,
                     query.kind.as_deref(),
                     query.domain.as_deref(),
-                    query.role.as_deref()
+                    query.role.as_deref(),
+                    query.domain_contains.as_deref(),
+                    query.exclude_emails.as_deref(),
+                    query.exclude_domains.as_deref(),
+                    query.exclude_domain_contains.as_deref(),
+                    query.exclude_email_contains.as_deref(),
+                    query.exclude_kinds.as_deref()
                 ],
                 |row| row.get(0),
             )
@@ -479,8 +589,14 @@ pub struct ContactQuery {
     pub limit: i64,
     pub include_filtered: bool,
     pub kind: Option<String>,
+    pub exclude_kinds: Option<String>,
     pub domain: Option<String>,
     pub role: Option<String>,
+    pub domain_contains: Option<String>,
+    pub exclude_emails: Option<String>,
+    pub exclude_email_contains: Option<String>,
+    pub exclude_domains: Option<String>,
+    pub exclude_domain_contains: Option<String>,
 }
 
 impl ContactQuery {
@@ -489,8 +605,14 @@ impl ContactQuery {
             limit,
             include_filtered: false,
             kind: None,
+            exclude_kinds: None,
             domain: None,
             role: None,
+            domain_contains: None,
+            exclude_emails: None,
+            exclude_email_contains: None,
+            exclude_domains: None,
+            exclude_domain_contains: None,
         }
     }
 }
@@ -721,8 +843,14 @@ mod tests {
                 limit: 10,
                 include_filtered: true,
                 kind: None,
+                exclude_kinds: None,
                 domain: None,
                 role: None,
+                domain_contains: None,
+                exclude_emails: None,
+                exclude_email_contains: None,
+                exclude_domains: None,
+                exclude_domain_contains: None,
             })
             .unwrap();
         assert!(
@@ -751,8 +879,14 @@ mod tests {
                 limit: 10,
                 include_filtered: true,
                 kind: Some("automated".to_string()),
+                exclude_kinds: None,
                 domain: Some("example.com".to_string()),
                 role: None,
+                domain_contains: None,
+                exclude_emails: None,
+                exclude_email_contains: None,
+                exclude_domains: None,
+                exclude_domain_contains: None,
             })
             .unwrap();
 
@@ -782,8 +916,14 @@ mod tests {
                 limit: 10,
                 include_filtered: true,
                 kind: None,
+                exclude_kinds: None,
                 domain: None,
                 role: Some("cc".to_string()),
+                domain_contains: None,
+                exclude_emails: None,
+                exclude_email_contains: None,
+                exclude_domains: None,
+                exclude_domain_contains: None,
             })
             .unwrap();
 
@@ -796,10 +936,57 @@ mod tests {
                 limit: 1,
                 include_filtered: true,
                 kind: None,
+                exclude_kinds: None,
                 domain: None,
                 role: Some("cc".to_string()),
+                domain_contains: None,
+                exclude_emails: None,
+                exclude_email_contains: None,
+                exclude_domains: None,
+                exclude_domain_contains: None,
             })
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn filters_contacts_with_domain_include_and_exclude_rules() {
+        let mut db = Database::open_memory().unwrap();
+        let scan_id = db.begin_scan(Path::new("sample.pst")).unwrap();
+
+        db.insert_message(
+            scan_id,
+            &RawMessage {
+                internet_message_id: Some("<domain-filters@example.com>".to_string()),
+                sender: Some(RawAddress::new("alice@example.com")),
+                to: vec![
+                    RawAddress::new("bob@example.org"),
+                    RawAddress::new("carol@internal.example.org"),
+                    RawAddress::new("dave@github.com"),
+                    RawAddress::new("digest-noreply@example.dev"),
+                ],
+                ..RawMessage::default()
+            },
+        )
+        .unwrap();
+
+        let contacts = db
+            .contacts(&ContactQuery {
+                limit: 10,
+                include_filtered: true,
+                kind: None,
+                exclude_kinds: Some("no_reply".to_string()),
+                domain: None,
+                role: None,
+                domain_contains: Some("example,github".to_string()),
+                exclude_emails: Some("bob@example.org".to_string()),
+                exclude_email_contains: Some("noreply,no-reply".to_string()),
+                exclude_domains: None,
+                exclude_domain_contains: Some("internal,github".to_string()),
+            })
+            .unwrap();
+
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].email, "alice@example.com");
     }
 }

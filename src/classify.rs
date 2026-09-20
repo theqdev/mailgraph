@@ -51,6 +51,16 @@ pub fn classify_sender(email: &str, headers: Option<&str>) -> SenderKind {
         return SenderKind::NoReply;
     }
 
+    if local.contains("noreply")
+        || local.contains("no-reply")
+        || local.contains("no_reply")
+        || local.contains("do-not-reply")
+        || local.contains("do_not_reply")
+        || local.contains("donotreply")
+    {
+        return SenderKind::NoReply;
+    }
+
     if matches!(local, "newsletter" | "digest" | "updates") {
         return SenderKind::Newsletter;
     }
@@ -101,6 +111,18 @@ mod tests {
         );
         assert_eq!(
             classify_sender("project@noreply.github.com", None),
+            SenderKind::NoReply
+        );
+        assert_eq!(
+            classify_sender("digest-noreply@quora.com", None),
+            SenderKind::NoReply
+        );
+        assert_eq!(
+            classify_sender("do_not_reply@example.com", None),
+            SenderKind::NoReply
+        );
+        assert_eq!(
+            classify_sender("noreply=example.com@mail.example.com", None),
             SenderKind::NoReply
         );
         assert_eq!(

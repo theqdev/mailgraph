@@ -1,4 +1,5 @@
 /target
+/contacts-clean.csv
 *.sqlite
 *.sqlite3
 *.db
